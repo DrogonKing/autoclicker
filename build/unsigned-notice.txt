@@ -1,0 +1,18 @@
+This program is not code-signed.
+
+Windows SmartScreen will warn you the first time you run it. That is expected for an unsigned
+build and is not a sign of a problem with the file:
+
+    More info  ->  Run anyway
+
+What the program does, so you can judge it yourself:
+
+  - It sends real mouse clicks and key presses, using the Windows SendInput API.
+  - It reads your cursor position only when you press "Capture cursor".
+  - It writes exactly two files: profiles.json and settings.json, in %APPDATA%\AutoClicker for the
+    installed build, or in a "profiles" folder next to the program for the portable build.
+  - It never connects to the network. There is no update check, no telemetry, no analytics.
+  - It registers one global hotkey (F6 by default) so you can stop it without using the mouse.
+
+Because it sends input, some antivirus tools flag autoclickers generically. The source is included
+in the release, so the behaviour can be read directly rather than taken on trust.

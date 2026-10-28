@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/temp/
+dist/
+dist-portable/
+dist-dir/
+portable-zip/
+
+# local data written during development
+.local/
+profiles/
+settings.json

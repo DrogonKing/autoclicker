@@ -1,0 +1,10 @@
+# Recorded for CI and for anyone building by hand.
+#   python -m venv .venv
+#   .venv/bin/pip install -e ".[dev]" pyinstaller
+name: autoclick
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - pytest
+  - pyinstaller
+  - pip

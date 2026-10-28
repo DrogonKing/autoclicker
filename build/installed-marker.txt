@@ -1,0 +1,4 @@
+This file tells the program it was installed rather than run portably.
+With it present, profiles are kept in %APPDATA%\AutoClicker so they survive a reinstall.
+Without it, profiles are kept in a folder beside the executable.
+Do not delete this file unless you want the portable behaviour.

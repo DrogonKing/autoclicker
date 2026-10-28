@@ -1,0 +1,183 @@
+name: build
+
+# Windows only, and for a concrete reason: the entire purpose of this program is SendInput, which
+# exists nowhere else. A Linux build could not click anything.
+#
+# This workflow is also the only place two things can be verified at all:
+#
+#   1. The SendInput structure layout. It is 40 bytes on Windows and 56 on Linux (ULONG differs), so
+#      it cannot be checked on the machine this was written on. A wrong layout does not raise an
+#      error - it sends malformed input.
+#   2. That the frozen executable can actually draw a window. A PyInstaller build can succeed and
+#      still produce something that starts and dies on a missing tkinter or Tk data directory. The
+#      packaged binary runs its own --selftest here, which builds all 101 widgets and exits.
+#
+# Both are asserted with a failing step, not a warning, so a green build means they ran.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: tests (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: run the suite
+        run: pytest -v --durations=10
+
+      - name: the Windows-only checks must not have been skipped
+        shell: pwsh
+        run: |
+          # There are 9 tests marked Windows-only. They skip everywhere else by design, which means a
+          # silent skip here would leave the SendInput layout unverified while still going green.
+          $out = pytest -q -rs 2>&1 | Out-String
+          Write-Host $out
+          if ($out -match "(\d+) skipped") {
+            Write-Error "tests were skipped on Windows: the platform checks did not run"
+            exit 1
+          }
+          Write-Host "no platform checks were skipped"
+
+      - name: the frozen import path works
+        run: python -c "import autoclick, autoclick.core.wininput as w; print(autoclick.__version__); print(w.layout_report())"
+
+  package:
+    name: package
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+
+      - name: build the portable single file
+        run: pyinstaller autoclick-portable.spec --noconfirm --distpath dist-portable
+
+      - name: build the tree the installer packages
+        run: pyinstaller autoclick-dir.spec --noconfirm --distpath dist-dir
+
+      - name: the packaged binary must start and build its interface
+        shell: pwsh
+        run: |
+          $exe = "dist-portable\AutoClicker.exe"
+          if (-not (Test-Path $exe)) { Write-Error "no portable executable was produced"; exit 1 }
+          $mb = (Get-Item $exe).Length / 1MB
+          Write-Host ("portable exe: {0:N1} MB" -f $mb)
+          if ($mb -lt 5) { Write-Error "the executable is too small; the bundle is incomplete"; exit 1 }
+
+          # Run the app's own self test. This constructs the whole UI, renders once, drives the
+          # engine and exits - so a missing tkinter or an uncollected Tk data directory fails HERE
+          # rather than on a user's machine.
+          $output = & $exe --selftest 2>&1 | Out-String
+          Write-Host $output
+          if ($LASTEXITCODE -ne 0) { Write-Error "the packaged app failed its self test"; exit 1 }
+          if ($output -notmatch "SELFTEST OK") { Write-Error "self test did not report success"; exit 1 }
+          if ($output -notmatch "frozen\s+True") { Write-Error "the binary is not running as a frozen app"; exit 1 }
+
+      - name: the directory build also self tests
+        shell: pwsh
+        run: |
+          $exe = "dist-dir\AutoClicker\AutoClicker.exe"
+          if (-not (Test-Path $exe)) { Write-Error "no directory build produced"; exit 1 }
+          $output = & $exe --selftest 2>&1 | Out-String
+          Write-Host $output
+          if ($output -notmatch "SELFTEST OK") { Write-Error "the directory build failed its self test"; exit 1 }
+
+      - name: install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: build the installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { Write-Error "Inno Setup compiler not found"; exit 1 }
+          & $iscc "build\installer.iss"
+          if ($LASTEXITCODE -ne 0) { Write-Error "installer build failed"; exit 1 }
+
+      - name: zip the portable release with its notice
+        shell: pwsh
+        run: |
+          # the portable user gets the same information the installer shows, inside the zip
+          New-Item -ItemType Directory -Force -Path portable-zip | Out-Null
+          Copy-Item "dist-portable\AutoClicker.exe" portable-zip\
+          Copy-Item "build\unsigned-notice.txt" "portable-zip\README-FIRST.txt"
+          Compress-Archive -Path "portable-zip\*" -DestinationPath "AutoClicker-portable.zip" -Force
+          Get-Item "AutoClicker-portable.zip", "dist\AutoClicker-*-setup.exe" | Select-Object Name, Length
+
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoclicker-windows
+          path: |
+            AutoClicker-portable.zip
+            dist/AutoClicker-*-setup.exe
+          if-no-files-found: error
+
+  release:
+    name: attach to release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artefacts
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artefacts/**/*
+          generate_release_notes: true
+          body: |
+            Two builds, both 64-bit Windows.
+
+            **Installer** `AutoClicker-1.0.0-setup.exe` - per-user, so no administrator prompt.
+            Profiles go to `%APPDATA%\AutoClicker`.
+
+            **Portable** `AutoClicker-portable.zip` - unpack anywhere, run `AutoClicker.exe`.
+            Profiles stay in a `profiles` folder beside the executable, so it travels on a USB stick.
+
+            Neither is code-signed, so SmartScreen warns on first run:
+            **More info -> Run anyway**. `README-FIRST.txt` inside the zip lists exactly what the
+            program reads and writes.
+
+            Input is sent with the Windows `SendInput` API. There is no network access of any kind -
+            no update check, no telemetry.
+
+            Verified in CI before publishing: 94 platform-independent tests, 9 Windows-only tests
+            (including the `SendInput` structure layout, which cannot be checked anywhere else), and
+            the packaged executable running its own self test - which builds the whole interface and
+            drives the timing engine.
