@@ -51,32 +51,49 @@ KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_SCANCODE = 0x0008
 
 
+# Fixed-width ctypes types, NOT ctypes.wintypes.
+#
+# This is the important decision in this file. `ctypes.wintypes.LONG` is an alias for `c_long`, which
+# is 4 bytes on Windows and 8 bytes on 64-bit Linux; `wintypes.ULONG` likewise. Building the struct
+# from those made its layout depend on the machine it was measured on, so the same code produced a
+# 40-byte INPUT on Windows and a 56-byte one on Linux - and the field offsets shifted with it. That
+# is a silent wrong-input bug waiting for a platform change.
+#
+# Using c_int32 / c_uint32 / c_uint16 / c_size_t gives the sizes the Win32 headers specify, on every
+# platform. Consequence: the layout is now asserted by the test suite everywhere, not only on a
+# Windows runner.
+LONG_ = ctypes.c_int32      # Windows LONG
+DWORD_ = ctypes.c_uint32    # Windows DWORD
+WORD_ = ctypes.c_uint16     # Windows WORD
+ULONG_PTR_ = ctypes.c_size_t  # 8 bytes on 64-bit, 4 on 32-bit - ULONG_PTR's actual definition
+
+
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [
-        ("dx", wt.LONG),
-        ("dy", wt.LONG),
-        ("mouseData", wt.DWORD),
-        ("dwFlags", wt.DWORD),
-        ("time", wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wt.ULONG)),
+        ("dx", LONG_),
+        ("dy", LONG_),
+        ("mouseData", DWORD_),
+        ("dwFlags", DWORD_),
+        ("time", DWORD_),
+        ("dwExtraInfo", ULONG_PTR_),
     ]
 
 
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [
-        ("wVk", wt.WORD),
-        ("wScan", wt.WORD),
-        ("dwFlags", wt.DWORD),
-        ("time", wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wt.ULONG)),
+        ("wVk", WORD_),
+        ("wScan", WORD_),
+        ("dwFlags", DWORD_),
+        ("time", DWORD_),
+        ("dwExtraInfo", ULONG_PTR_),
     ]
 
 
 class HARDWAREINPUT(ctypes.Structure):
     _fields_ = [
-        ("uMsg", wt.DWORD),
-        ("wParamL", wt.WORD),
-        ("wParamH", wt.WORD),
+        ("uMsg", DWORD_),
+        ("wParamL", WORD_),
+        ("wParamH", WORD_),
     ]
 
 
@@ -85,12 +102,29 @@ class _INPUTUNION(ctypes.Union):
 
 
 class INPUT(ctypes.Structure):
-    _fields_ = [("type", wt.DWORD), ("union", _INPUTUNION)]
+    _fields_ = [("type", DWORD_), ("union", _INPUTUNION)]
 
 
-# A wrong structure size would not raise, it would send garbage. Checked here so a future edit that
-# breaks the layout fails loudly on the first run instead of misbehaving in the field.
-_EXPECTED_INPUT_SIZE = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+# Sizes, from the Win32 headers. ULONG_PTR is 8 bytes on 64-bit and 4 on 32-bit:
+#
+#             32-bit   64-bit
+#   MOUSEINPUT    24       32
+#   KEYBDINPUT    16       24
+#   INPUT         28       40
+#
+# With fixed-width field types these hold on every platform, so the assertion is not deferred to a
+# Windows runner. It was 32 vs 24 on windows-latest when the fields used ctypes.wintypes - which is
+# how the platform-dependence was found.
+_PTR_BYTES = ctypes.sizeof(ULONG_PTR_)
+WINDOWS_INPUT_SIZE_64 = 40
+WINDOWS_INPUT_SIZE_32 = 28
+EXPECTED_MOUSE_SIZE = 32 if _PTR_BYTES == 8 else 24
+EXPECTED_KEY_SIZE = 24 if _PTR_BYTES == 8 else 16
+_EXPECTED_INPUT_SIZE = WINDOWS_INPUT_SIZE_64 if _PTR_BYTES == 8 else WINDOWS_INPUT_SIZE_32
+
+# The offsets that decide what input is actually sent. These are checked in the suite on any OS.
+MOUSE_FIELD_OFFSETS = {"dx": 0, "dy": 4, "mouseData": 8, "dwFlags": 12, "time": 16}
+KEY_FIELD_OFFSETS = {"wVk": 0, "wScan": 2, "dwFlags": 4, "time": 8}
 
 
 class InputError(RuntimeError):
@@ -110,6 +144,10 @@ VK: dict[str, int] = {
     "multiply": 0x6A, "add": 0x6B, "subtract": 0x6D, "decimal": 0x6E, "divide": 0x6F,
     "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74, "f6": 0x75,
     "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+    # F13-F24 exist in Win32 (VK_F13 = 0x7C .. VK_F24 = 0x87) but are absent from most keyboards.
+    # They are here because a macro keypad may send them and a missing key is an error, not a no-op.
+    "f13": 0x7C, "f14": 0x7D, "f15": 0x7E, "f16": 0x7F, "f17": 0x80, "f18": 0x81,
+    "f19": 0x82, "f20": 0x83, "f21": 0x84, "f22": 0x85, "f23": 0x86, "f24": 0x87,
     "numlock": 0x90, "scrolllock": 0x91,
     "lshift": 0xA0, "rshift": 0xA1, "lctrl": 0xA2, "rctrl": 0xA3, "lalt": 0xA4, "ralt": 0xA5,
     ";": 0xBA, "=": 0xBB, ",": 0xBC, "-": 0xBD, ".": 0xBE, "/": 0xBF, "`": 0xC0,
