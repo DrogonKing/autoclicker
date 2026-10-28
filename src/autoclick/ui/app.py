@@ -17,6 +17,7 @@ Layout decisions worth naming:
 
 from __future__ import annotations
 
+import queue
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any
@@ -48,6 +49,11 @@ class App:
         self.engine: Engine | None = None
         self.dry_run = False
         self._last_stats = RunStats()
+        # The engine runs on its own thread and Tk is not thread-safe: calling `after` from that
+        # thread fails silently, so no progress ever reached the UI and the buttons were never
+        # restored. A queue is the thread-safe hand-off; the UI drains it from its own thread.
+        self._progress_q: queue.Queue[RunStats] = queue.Queue()
+        self._poll_id: str | None = None
 
         self.hotkey = Hotkey(self._hotkey_fired)
 
@@ -483,7 +489,17 @@ class App:
         self.dry_run = dry
         backend = make_backend(dry_run=dry)
         self.engine = Engine(backend)
-        self.engine.on_progress(lambda s: self.root.after(0, self._refresh_status, s))
+
+        # Put on the queue, which is safe from another thread. `root.after` is NOT: Tcl is bound to the
+        # thread that created it, so scheduling from the engine thread failed silently and the interface
+        # never heard that the run had started, progressed or finished.
+        self.engine.on_progress(self._progress_q.put)
+        # clear anything left over from a previous run so its final stats cannot flash on screen
+        while not self._progress_q.empty():
+            try:
+                self._progress_q.get_nowait()
+            except queue.Empty:
+                break
 
         if dry:
             self.warn_label.configure(text=self.tr("s.dry_run"))
@@ -494,6 +510,15 @@ class App:
         self.test_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.status_box.configure(text=self.tr("app.running"))
+
+        # Order is load-bearing: the buttons must already show "running" before the polling loop starts,
+        # because the loop decides at its first tick whether a run is in progress by looking at exactly
+        # that state. Starting the engine first would give the loop a thread that may already have
+        # finished, and it would immediately call _after_run on a run that just began.
+        if self._poll_id:
+            self.root.after_cancel(self._poll_id)
+            self._poll_id = None
+        self._drain_queue()
         self.engine.start(profile)
 
     def _warnings_for(self, p: Profile) -> str:
@@ -525,6 +550,47 @@ class App:
         else:
             self._start(False)
 
+    def _drain_queue(self) -> None:
+        """
+        Consume progress reports on the Tk thread, and finish the run when the engine has stopped.
+
+        Two jobs, and the second is the important one. Restoring the buttons used to depend on a final
+        progress callback arriving after the engine thread had died, which never happened: the last
+        callback is sent from inside the loop while the thread is still alive, so `is_running()` was
+        still True and `_after_run` was declined. The result was an app usable exactly once per launch.
+
+        Polling ends when the engine is no longer alive, which is a condition the UI can always observe
+        for itself rather than waiting to be told.
+        """
+        drained = False
+        while True:
+            try:
+                stats = self._progress_q.get_nowait()
+            except queue.Empty:
+                break
+            self._last_stats = stats
+            drained = True
+
+        if drained:
+            self._refresh_status(self._last_stats)
+
+        engine = self.engine
+        if engine is None:
+            self._poll_id = None
+            return
+
+        # A run is over when its thread has died AND it has reported at least once. Checking only the
+        # thread was wrong: `is_running()` is False for a moment after start() spawns the thread, so the
+        # first poll declared the run finished, showed the pre-run zeroes and re-enabled the buttons.
+        seen_progress = drained or self._last_stats.repeats_done > 0
+        if not engine.is_running() and seen_progress:
+            self._poll_id = None
+            if str(self.stop_btn["state"]) == "normal":
+                self._after_run()
+            return
+
+        self._poll_id = self.root.after(30, self._drain_queue)
+
     def _after_run(self) -> None:
         self.start_btn.configure(state="normal")
         self.test_btn.configure(state="normal")
@@ -544,8 +610,9 @@ class App:
 
         if s.error:
             self.warn_label.configure(text=f"{self.tr('s.error')}: {s.error}")
-        if self.engine and not self.engine.is_running() and self.stop_btn["state"] == "normal":
-            self._after_run()
+        # NB: the end-of-run state transition deliberately does NOT live here. It is driven by the
+        # polling loop in `_drain_queue`, which can always see whether the engine is alive; making it
+        # depend on a callback arriving at the right moment is what left Start disabled forever.
 
     # ------------------------------------------------------------------ misc
 

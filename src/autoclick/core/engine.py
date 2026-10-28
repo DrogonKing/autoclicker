@@ -87,6 +87,8 @@ class Engine:
         self._now_clock = now_clock or _local_clock
 
         self._stop = threading.Event()
+        # absolute deadline for the whole run, set per run from profile.max_duration_ms. 0 = no limit.
+        self._limit_ms = 0
         self._thread: threading.Thread | None = None
         self.stats = RunStats()
         self._on_progress: Callable[[RunStats], None] | None = None
@@ -141,6 +143,10 @@ class Engine:
         t0 = self._time_fn()
         self.stats.started_at_ms = t0
 
+        # The safety net as an absolute wall-clock deadline. It is enforced inside every sleep as well
+        # as between repetitions, so a long WaitStep or a run of key chords cannot overshoot it.
+        self._limit_ms = (t0 + profile.max_duration_ms) if profile.max_duration_ms else 0
+
         # When does the first tick happen? An explicit clock time wins over a relative delay, because
         # a user who typed a time meant that time.
         if profile.start_at or profile.start_in_ms:
@@ -160,8 +166,8 @@ class Engine:
         while not self._stop.is_set():
             now = self._time_fn()
 
-            if profile.max_duration_ms and (now - start_ms) >= profile.max_duration_ms:
-                self.stats.stopped_by = "max duration reached"
+            if self._limit_ms and self._time_fn() >= self._limit_ms:
+                self.stop("max duration reached")
                 break
 
             if profile.repeat and index >= profile.repeat:
@@ -185,17 +191,61 @@ class Engine:
             interval = schedule.interval_ms(index)
             if interval is None:
                 break
-            deadline_ms = start_ms + index * interval
-            if interval > 0 and self._time_fn() > deadline_ms + timing.LATE_TOLERANCE_MS:
-                self.stats.missed_ticks += 1
-                late = self._time_fn() - deadline_ms
-                if late > self.stats.max_late_ms:
-                    self.stats.max_late_ms = late
+            if interval <= 0:
+                # BackToBack has no deadline, so there is nothing to be late for. Measuring against
+                # start+0 reported the whole elapsed time as lateness and grew missed_ticks on every
+                # tick of a perfectly healthy run.
+                continue
+
+            after_ms = self._time_fn()
+            next_due_ms = start_ms + index * interval
+            overshoot = after_ms - next_due_ms
+            if overshoot > 0:
+                # the repetition itself overran its slot. This is the case a genuinely slow click hits,
+                # and it used to go unreported.
+                if overshoot > self.stats.max_late_ms:
+                    self.stats.max_late_ms = overshoot
+                if overshoot > interval:
+                    # further behind than a whole slot: the schedule cannot be caught up without a
+                    # burst, which the design refuses to do. Counted once per skipped slot so the
+                    # number means "clicks that did not happen on time".
+                    self.stats.missed_ticks += int(overshoot // interval)
+                # pull the schedule forward so the next wait is computed from reality, not from a
+                # deadline that is already impossible
+                start_ms = after_ms - index * interval
 
         self.stats.finished_at_ms = self._time_fn()
 
     def _schedule_for(self, profile: Profile) -> Schedule:
         return schedule_for(profile)
+
+    def _sleep_interruptible(self, ms: float) -> bool:
+        """
+        Sleep for `ms`, in slices, while staying responsive to both Stop and the run limit.
+
+        Returns True if the run must halt now (Stop was pressed, or the time limit is up).
+
+        Slicing is what makes a long wait interruptible: a single `sleep(30000)` leaves Stop doing
+        nothing for thirty seconds, which reads as a frozen program. It also lets the safety-net time
+        limit cut short a wait inside a sequence - without that, "stop after 1 second" was measured to
+        run for five, because a WaitStep inside the repetition was never checked.
+        """
+        deadline = self._time_fn() + ms
+        while True:
+            if self._stop.is_set():
+                return True
+            now = self._time_fn()
+            if self._limit_ms and now >= self._limit_ms:
+                # route through stop() so the reason and the flag agree everywhere
+                self.stop("max duration reached")
+                return True
+            remaining = deadline - now
+            if remaining <= 0:
+                return False
+            slice_ms = min(remaining, 25)
+            if self._limit_ms:
+                slice_ms = min(slice_ms, max(1, self._limit_ms - now))
+            self._sleep_fn(slice_ms)
 
     def _sleep_until(self, deadline_ms: int, _start: int) -> bool:
         """
@@ -225,28 +275,50 @@ class Engine:
             elif isinstance(step, KeyStep):
                 self._fire_chord(step)
             elif isinstance(step, WaitStep):
-                self._sleep_fn(step.ms)
+                # interruptible, so Stop works and the run limit can cut a long wait short. A raw
+                # sleep here made the program look frozen for the whole wait.
+                if self._sleep_interruptible(step.ms):
+                    return
 
     def _fire_chord(self, step: KeyStep) -> None:
         """
         Press the keys with a gap, then release in reverse order with the same gap.
 
         Reverse release is what a real keyboard does for a chord: ctrl goes down first and comes up
-        last. Releasing in the same order can drop the modifier on some applications.
+        last. Releasing in the same order can drop the modifier in some applications.
+
+        The release happens in a `finally` because an earlier version returned early when stop was
+        pressed, leaving keys held down. A test caught it: pressing ctrl+shift+t and stopping mid-chord
+        left 'ctrl' down, and the user's keyboard stays stuck until they press it physically. Whatever
+        else happens in here, every key that went down comes back up.
         """
-        for k in step.keys:
-            if self._stop.is_set():
-                return
-            self._backend.key_down(k)
-            self.stats.keys_sent += 1
-            if step.gap_ms:
-                self._sleep_fn(step.gap_ms)
-        if step.hold_ms:
-            self._sleep_fn(step.hold_ms)
-        for k in reversed(step.keys):
-            self._backend.key_up(k)
-            if step.gap_ms:
-                self._sleep_fn(step.gap_ms)
+        pressed: list[str] = []
+        halted = False
+        try:
+            for k in step.keys:
+                if self._stop.is_set():
+                    halted = True
+                    break
+                self._backend.key_down(k)
+                self.stats.keys_sent += 1
+                pressed.append(k)
+                if step.gap_ms and self._sleep_interruptible(step.gap_ms):
+                    halted = True
+                    break
+            if not halted and step.hold_ms:
+                halted = self._sleep_interruptible(step.hold_ms)
+        finally:
+            for i, k in enumerate(reversed(pressed)):
+                try:
+                    self._backend.key_up(k)
+                except Exception as e:  # noqa: BLE001
+                    # keep releasing the rest: a stuck modifier is worse than a reported error
+                    if not self.stats.error:
+                        self.stats.error = f"could not release {k!r}: {e}"
+                # mirror the down-gap on a clean run; when halted, release immediately so the keyboard
+                # is freed as fast as possible
+                if step.gap_ms and not halted and i < len(pressed) - 1:
+                    self._sleep_interruptible(step.gap_ms)
 
 
 def _local_clock() -> tuple[int, int, int]:

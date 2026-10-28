@@ -45,13 +45,25 @@ jobs:
           pip install -e ".[dev]"
 
       - name: run the suite
+        # Includes the UI tests, which need a real display. A Windows runner has one, which is another
+        # reason this workflow is Windows-only: the interface's own state bugs - a Start button left
+        # disabled after a run - are only visible with real widgets.
         run: pytest -v --durations=10
+
+      - name: the UI tests must not have been skipped
+        shell: pwsh
+        run: |
+          # A skipped UI test on Windows would mean Tk could not create a window, which is exactly the
+          # failure these tests exist to catch. Silence must not look like success.
+          $out = pytest -q -rs 2>&1 | Out-String
+          if ($out -match "test_ui.py.*skipped") { Write-Error "the UI tests were skipped"; exit 1 }
+          Write-Host "the UI tests ran"
 
       - name: the Windows-only checks must not have been skipped
         shell: pwsh
         run: |
-          # There are 9 tests marked Windows-only. They skip everywhere else by design, which means a
-          # silent skip here would leave the SendInput layout unverified while still going green.
+          # The platform-marked tests skip everywhere else by design, which means a silent skip here
+          # would leave the SendInput layout unverified while still going green.
           $out = pytest -q -rs 2>&1 | Out-String
           Write-Host $out
           if ($out -match "(\d+) skipped") {

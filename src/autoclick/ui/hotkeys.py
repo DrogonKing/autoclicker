@@ -39,7 +39,7 @@ def parse_hotkey(spec: str) -> tuple[int, int]:
     Raises ValueError with a readable message rather than registering the wrong key, because a
     hotkey that silently does not work is discovered at the worst moment.
     """
-    from ..core.wininput import key_to_vk
+    from ..core.wininput import InputError, key_to_vk
 
     parts = [p.strip().lower() for p in (spec or "").split("+") if p.strip()]
     if not parts:
@@ -55,7 +55,12 @@ def parse_hotkey(spec: str) -> tuple[int, int]:
             key_part = p
     if key_part is None:
         raise ValueError("hotkey needs a key, e.g. ctrl+shift+f6 or f8")
-    vk = key_to_vk(key_part)
+    try:
+        vk = key_to_vk(key_part)
+    except InputError as e:
+        # key_to_vk raises InputError (a RuntimeError). This function's contract is ValueError, and a
+        # caller that catches ValueError - which is what the docstring promises - would have missed it.
+        raise ValueError(str(e)) from None
     return mods, vk
 
 
@@ -121,7 +126,10 @@ class Hotkey:
         if not ok:
             return
 
-        msg = ctypes.wintypes.MSG() if hasattr(ctypes, "wintypes") else None
+        # `ctypes.wintypes` is a submodule and is NOT an attribute of `ctypes` unless it has been
+        # imported, so a `hasattr(ctypes, "wintypes")` check is always False - it looks like a guard and
+        # is not one. Imported explicitly here (the third import in this module, kept because this
+        # function is the only place MSG is needed).
         import ctypes.wintypes as wt
 
         msg = wt.MSG()
@@ -141,8 +149,6 @@ class Hotkey:
         if not self.available or self._thread is None:
             self._registered = False
             return
-        import ctypes.wintypes as wt
-
         if self._thread_id:
             user32 = ctypes.WinDLL("user32", use_last_error=True)
             user32.UnregisterHotKey(None, 1)
