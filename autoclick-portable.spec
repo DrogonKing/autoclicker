@@ -1,13 +1,19 @@
-# Shared PyInstaller settings for both build modes.
+# PyInstaller build: the portable single-file release.
 #
-# Two spec files exist rather than one with a flag because PyInstaller rejects --onefile when a .spec
-# is given: "makespec options not valid when a .spec file is given". The build mode is therefore a
-# property of the file, and the two graphs are genuinely different anyway (see each file).
+# A separate file from autoclick-dir.spec because PyInstaller rejects --onefile when a .spec is given
+# ("makespec options not valid when a .spec file is given"), so the mode is a property of the file.
+#
+# Both specs share the same Analysis settings and the same Tk collection. If you change one, change the
+# other: a divergence would mean the two released builds behave differently, which is exactly the kind
+# of difference nobody would think to test.
 
+import glob
+import os
 import sys
+import sysconfig
 
 # tkinter is imported lazily inside the UI module, so static analysis can miss it. A missing tkinter
-# produces an executable that starts and immediately exits with no window - the worst failure to
+# produces an executable that starts and immediately dies with no window - the worst failure to
 # diagnose from a user report.
 HIDDEN = [
     "tkinter",
@@ -15,6 +21,7 @@ HIDDEN = [
     "tkinter.messagebox",
     "tkinter.filedialog",
     "tkinter.font",
+    "tkinter.constants",
 ]
 
 # Nothing in this program uses these. Excluding them keeps the portable build small.
@@ -23,41 +30,50 @@ EXCLUDES = [
 ]
 
 
-# --- Tk libraries -------------------------------------------------------------------------------
-#
-# Collected explicitly rather than trusted to PyInstaller's hook. The hook assumes the python.org
-# layout (`tcl/` beside the interpreter, `libtcl8.6.so` / `tcl86t.dll`); this host's CPython ships Tk 9
-# modular (`libtcl9.0.so`, `libtcl9tk9.0.so`, `tcl9.0/`), and the hook silently collects none of it.
-# The result is an executable that builds cleanly and dies with
-# "ImportError: libtcl9.0.so: cannot open shared object file" - found by running it.
 def _tk_binaries():
-    import glob
-    import os
-    import sysconfig
+    """
+    Find Tk's shared libraries.
 
+    Explicit rather than trusted to PyInstaller's hook. The hook expects the python.org layout (a
+    `tcl/` directory beside the interpreter with `libtcl8.6.so` or `tcl86t.dll`). The CPython used to
+    develop this ships Tk 9 modular - `libtcl9.0.so` plus a separate `libtcl9tk9.0.so` under `lib/` -
+    and the hook collected NONE of it, which produced a build that died with
+    "ImportError: libtcl9.0.so: cannot open shared object file".
+
+    On Windows the same code collects tcl86t.dll, tk86t.dll and their script folders, so one
+    implementation covers both platforms and CI exercises the Windows path.
+
+    The return shape is (source, destination_directory) pairs, which is what Analysis expects - a list
+    of bare paths fails with "too many values to unpack (expected 2)".
+    """
     found = []
-    libdirs = [
-        sysconfig.get_config_var("LIBDIR"),
-        sysconfig.get_paths().get("platstdlib"),
-        os.path.join(sysconfig.get_paths().get("stdlib", ""), "lib-dynload"),
-    ]
+    bases = []
+    for key in ("LIBDIR", "purelib", "platlib"):
+        v = sysconfig.get_config_var(key) or sysconfig.get_paths().get(key)
+        if v:
+            bases.append(v)
+    bases.append(sysconfig.get_paths().get("stdlib", ""))
+    bases.append(os.path.join(sysconfig.get_paths().get("stdlib", ""), "lib-dynload"))
+    # the python.org Windows layout keeps Tk beside the interpreter
+    bases.append(os.path.dirname(sys.executable))
+    bases.append(os.path.join(os.path.dirname(sys.executable), "DLLs"))
+    bases.append(os.path.join(os.path.dirname(sys.executable), "tcl"))
+
     patterns = [
         "libtcl*.so*", "libtk*.so*", "libtcl*.dylib", "libtk*.dylib",
-        "tcl*.dll", "tk*.dll", "zlib1.dll",
+        "tcl*.dll", "tk*.dll", "_tkinter*.pyd", "zlib1.dll",
     ]
-    for d in libdirs:
-        if not d or not os.path.isdir(d):
+    for base in bases:
+        if not base or not os.path.isdir(base):
             continue
         for pat in patterns:
-            for hit in glob.glob(os.path.join(d, pat)):
-                if os.path.isfile(hit) and not os.path.islink(hit):
+            for hit in glob.glob(os.path.join(base, pat)):
+                if os.path.isfile(hit):
                     found.append(hit)
-    # de-duplicate by final component: the same library can be reachable by two paths.
-    # The return shape is (source, destination_dir) pairs, which is what PyInstaller's Analysis
-    # expects - a list of bare paths fails with "too many values to unpack (expected 2)".
+    # de-duplicate by file name: the same library is reachable by several paths
     seen = set()
     out = []
-    for f in found:
+    for f in sorted(found):
         name = os.path.basename(f)
         if name in seen:
             continue
@@ -67,44 +83,77 @@ def _tk_binaries():
 
 
 def _tk_datas():
-    """The Tcl script directories, which Tk needs at run time to create any widget at all."""
-    import os
-    import sysconfig
+    """
+    Find Tk's script directories.
 
-    roots = {
-        sysconfig.get_config_var("LIBDIR") or "",
-        os.path.dirname(os.path.dirname(sysconfig.get_paths().get("stdlib", ""))),
-    }
+    Without these Tk cannot create a single widget: `init.tcl` lives in them. Destination is the
+    directory's own name, so Tk finds it where it looks for it.
+    """
+    roots = set()
+    for key in ("LIBDIR", "purelib", "platlib"):
+        v = sysconfig.get_config_var(key) or sysconfig.get_paths().get(key)
+        if v:
+            roots.add(os.path.dirname(v.rstrip("/\\")))
+            roots.add(v)
+    roots.add(os.path.dirname(sys.executable))
+    roots.add(os.path.join(os.path.dirname(sys.executable), "tcl"))
+
     out = []
     for root in sorted(r for r in roots if r and os.path.isdir(r)):
-        for name in os.listdir(root):
+        for name in sorted(os.listdir(root)):
             p = os.path.join(root, name)
             if not os.path.isdir(p):
                 continue
-            # tcl8.6, tk8.6, tcl9.0, tcl9, tk9, tcl9tk9.0 ...
             low = name.lower()
-            if low.startswith("tcl") or low.startswith("tk"):
-                # destination is the script directory's own name, so Tk finds it where it expects
+            # tcl8.6, tk8.6, tcl9.0, tcl9, tk9, tcl9tk9.0, tcl, tk
+            if low in ("tcl", "tk") or low.startswith("tcl") or low.startswith("tk"):
                 out.append((p, name))
-    return out
+    # de-duplicate by destination name: two roots can offer the same directory
+    seen = set()
+    final = []
+    for src, dst in out:
+        if dst in seen:
+            continue
+        seen.add(dst)
+        final.append((src, dst))
+    return final
 
 
 _tk_bin = _tk_binaries()
 _tk_data = _tk_datas()
+
 print(f"[spec] Tk libraries collected: {len(_tk_bin)}")
 for _src, _dst in _tk_bin:
     print(f"[spec]   lib  {os.path.basename(_src)}")
 print(f"[spec] Tk script dirs collected: {len(_tk_data)}")
-for _d, _name in _tk_data:
-    print(f"[spec]   dir  {_name}")
+for _src, _dst in _tk_data:
+    print(f"[spec]   dir  {_dst}")
 
+# A Windows build with no Tk libraries is broken and must fail here, not on a user's machine. The
+# earlier CI run printed "Tk libraries collected: 0" and carried on to a build that could not start.
+if not _tk_bin or not _tk_data:
+    raise SystemExit(
+        f"Tk was not found (libraries: {len(_tk_bin)}, script dirs: {len(_tk_data)}). "
+        f"An executable built without it cannot open a window."
+    )
 
-# --- build --------------------------------------------------------------------------------------
+analysis = Analysis(
+    ["src/autoclick/__main__.py"],
+    pathex=["src"],
+    binaries=_tk_bin,
+    datas=_tk_data,
+    hiddenimports=HIDDEN,
+    hookspath=[],
+    runtime_hooks=[],
+    excludes=EXCLUDES,
+    noarchive=False,
+)
+
 pyz = PYZ(analysis.pure)
 
 # The portable release: one file, so it can be carried on a USB stick. It unpacks to a temporary
-# directory at each launch, costing about a second of startup; that is the accepted trade for a
-# single file, and the app reports itself as "portable" so the storage location is never a surprise.
+# directory at each launch, which costs about a second of startup - the accepted trade for a single
+# file. The app reports itself as "portable" so the storage location is never a surprise.
 exe = EXE(
     pyz,
     analysis.scripts,
