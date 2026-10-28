@@ -8,8 +8,13 @@
 ;   - offers the per-user install by default, so no administrator prompt appears for a tool this
 ;     small. The user can still choose an all-users install.
 
+; Where the one-dir PyInstaller build put its output. Overridable with /DDirBuild=...
+#ifndef DirBuild
+  #define DirBuild "..\dist-dir\AutoClicker"
+#endif
+
 #define AppName "AutoClicker"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.3"
 #define AppPublisher "drogon"
 #define AppExeName "AutoClicker.exe"
 
@@ -24,6 +29,7 @@ DisableProgramGroupPage=yes
 ; per-user by default: no UAC prompt for a small utility
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+; where the setup .exe itself goes, relative to this file
 OutputDir=..\dist
 OutputBaseFilename=AutoClicker-{#AppVersion}-setup
 Compression=lzma2
@@ -42,7 +48,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\dist\AutoClicker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The directory build's location comes in as a parameter because the workflow writes it to dist-dir/
+; while an earlier version of this script read ..\dist\, and the mismatch surfaced as
+; "No files found matching" during a CI build. One definition, passed in, so the two cannot disagree.
+; Defaulted so a manual ISCC run still works without arguments.
+Source: "{#DirBuild}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\build\installed-marker.txt"; DestDir: "{app}"; DestName: ".installed"; Flags: ignoreversion
 
 [Icons]
