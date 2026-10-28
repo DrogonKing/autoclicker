@@ -98,6 +98,47 @@ class TestStructLayoutEverywhere:
     def test_layout_is_reported_as_valid(self):
         assert wininput.input_structure_is_valid(), wininput.layout_report()
 
+    def test_mouse_input_can_be_constructed(self):
+        """
+        Construction, not just size.
+
+        A real failure on windows-latest: after the field types were fixed, `dwExtraInfo` became an
+        integer type, and `c_size_t` rejects None where the pointer type it replaced accepted it -
+        "TypeError: 'NoneType' object cannot be interpreted as an integer". Building the struct in a
+        test catches that here instead of after a CI round trip.
+        """
+        mi = wininput.MOUSEINPUT(0, 0, 0, wininput.MOUSEEVENTF_LEFTDOWN, 0, 0)
+        assert mi.dwFlags == wininput.MOUSEEVENTF_LEFTDOWN
+        assert mi.dx == 0 and mi.dy == 0
+
+    def test_keybd_input_can_be_constructed(self):
+        ki = wininput.KEYBDINPUT(0x41, 0, 0, 0, 0)
+        assert ki.wVk == 0x41
+
+    def test_input_can_wrap_a_mouse_event(self):
+        """The shape SendInput actually receives: a tagged union member."""
+        mi = wininput.MOUSEINPUT(0, 0, 0, wininput.MOUSEEVENTF_MOVE, 0, 0)
+        inp = wininput.INPUT(type=wininput.INPUT_MOUSE, union=wininput._INPUTUNION(mi=mi))
+        assert inp.type == wininput.INPUT_MOUSE
+        assert inp.union.mi.dwFlags == wininput.MOUSEEVENTF_MOVE
+
+    def test_input_can_wrap_a_key_event(self):
+        ki = wininput.KEYBDINPUT(0x41, 0, 0, 0, 0)
+        inp = wininput.INPUT(type=wininput.INPUT_KEYBOARD, union=wininput._INPUTUNION(ki=ki))
+        assert inp.type == wininput.INPUT_KEYBOARD
+
+    def test_every_input_constructor_call_site_passes_an_integer_extra_info(self):
+        """
+        A guard against the same mistake returning: dwExtraInfo must be an integer.
+
+        Asserted through the class rather than by grepping the source, so it holds no matter how the
+        call sites are written.
+        """
+        field_type = dict(wininput.MOUSEINPUT._fields_)["dwExtraInfo"]
+        assert field_type in (ctypes.c_size_t, ctypes.c_uint64, ctypes.c_uint32), (
+            "dwExtraInfo is a pointer type again; c_size_t is what matches ULONG_PTR"
+        )
+
 
 class TestKeyTable:
     """Runs everywhere: a wrong virtual-key code is wrong on any platform."""

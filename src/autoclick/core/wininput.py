@@ -224,7 +224,10 @@ class WindowsBackend(InputBackend):
             raise InputError(f"SendInput failed (Win32 error {code})")
 
     def _mouse(self, flags: int, dx: int = 0, dy: int = 0) -> None:
-        mi = MOUSEINPUT(dx, dy, 0, flags, 0, None)
+        # dwExtraInfo is 0, not None: it is ULONG_PTR (an integer type), and c_size_t rejects None.
+        # A pointer type would accept it, which is what the earlier version used and why this only
+        # appeared after the widths were fixed.
+        mi = MOUSEINPUT(dx, dy, 0, flags, 0, 0)
         self._send(INPUT(type=INPUT_MOUSE, union=_INPUTUNION(mi=mi)))
 
     # ------------------------------------------------------------------ the four calls
@@ -261,12 +264,13 @@ class WindowsBackend(InputBackend):
 
     def key_down(self, key: str) -> None:
         vk = key_to_vk(key)
-        ki = KEYBDINPUT(vk, 0, 0, 0, None)
+        # dwExtraInfo 0 for the same reason as in _mouse
+        ki = KEYBDINPUT(vk, 0, 0, 0, 0)
         self._send(INPUT(type=INPUT_KEYBOARD, union=_INPUTUNION(ki=ki)))
 
     def key_up(self, key: str) -> None:
         vk = key_to_vk(key)
-        ki = KEYBDINPUT(vk, 0, KEYEVENTF_KEYUP, 0, None)
+        ki = KEYBDINPUT(vk, 0, KEYEVENTF_KEYUP, 0, 0)
         self._send(INPUT(type=INPUT_KEYBOARD, union=_INPUTUNION(ki=ki)))
 
 
