@@ -14,7 +14,7 @@
 #endif
 
 #define AppName "AutoClicker"
-#define AppVersion "1.0.3"
+#define AppVersion "1.0.4"
 #define AppPublisher "drogon"
 #define AppExeName "AutoClicker.exe"
 
