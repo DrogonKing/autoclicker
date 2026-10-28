@@ -72,6 +72,11 @@ jobs:
           }
           Write-Host "no platform checks were skipped"
 
+      - name: translation keys are complete and consistent
+        # A missing key renders as the key name itself, so a Persian user would see "f.interval" where a
+        # label belongs. Cheap to check, easy to miss by eye.
+        run: python scripts/check_i18n.py
+
       - name: the frozen import path works
         run: python -c "import autoclick, autoclick.core.wininput as w; print(autoclick.__version__); print(w.layout_report())"
 

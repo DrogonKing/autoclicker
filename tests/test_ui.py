@@ -193,6 +193,68 @@ class TestGather:
         assert p.interval_ms == 0
 
 
+class TestLanguage:
+    def test_switching_language_updates_the_labels_in_place(self, root):
+        """
+        The switch must apply immediately, not ask for a restart.
+
+        A language is a preference; requiring a restart for it is a poor experience and was the old
+        behaviour. The labels are registered when they are built, so this walks that registry.
+        """
+        from autoclick.ui.app import App
+
+        app = App(root)
+        app.lang = "en"
+        app._apply_language()
+        english = app.title_label["text"]
+
+        app.lang = "fa"
+        app._apply_language()
+        persian = app.title_label["text"]
+
+        assert english != persian, "the title did not change with the language"
+        assert persian == app.tr("app.title")
+        # and back again, so the switch is not one-way
+        app.lang = "en"
+        app._apply_language()
+        assert app.title_label["text"] == english
+
+    def test_every_bound_label_resolves_in_both_languages(self, root):
+        """A key with no translation renders as the key itself, e.g. "f.interval" on a Persian label."""
+        from autoclick.ui import strings
+        from autoclick.ui.app import App
+
+        app = App(root)
+        unresolved = [
+            (key, lang)
+            for _w, key, _kind in app._text_bindings
+            for lang in ("en", "fa")
+            if strings.t(key, lang) == key
+        ]
+        assert unresolved == [], f"labels with no translation: {unresolved}"
+
+    def test_the_about_tab_states_where_settings_live(self, root):
+        """
+        The installed-build notice tells the user the About panel says where their profiles are kept,
+        so that text has to be there.
+        """
+        from autoclick.ui.app import App
+        from autoclick.ui import store
+
+        app = App(root)
+        assert str(store.data_dir()) in app.about_storage["text"]
+
+    def test_a_language_switch_survives_a_reload(self, root, tmp_path, monkeypatch):
+        from autoclick.ui import app as app_mod
+        from autoclick.ui import store
+
+        monkeypatch.setattr(store, "settings_file", lambda: tmp_path / "settings.json")
+        a = app_mod.App(root)
+        a.lang_var.set("fa")
+        a._set_language("fa")
+        assert store.load_settings(tmp_path / "settings.json")["language"] == "fa"
+
+
 class TestStepEditing:
     def test_add_and_remove_a_step(self, root):
         from autoclick.ui.app import App

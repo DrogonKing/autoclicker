@@ -42,6 +42,10 @@ class App:
         if self.lang not in strings.LANGUAGES:
             self.lang = strings.DEFAULT_LANGUAGE
 
+        # (widget, key, kind) for every label that shows translated text, so a language change can be
+        # applied to the open window instead of asking the user to restart
+        self._text_bindings: list[tuple[object, str, str]] = []
+
         self.profiles: list[Profile] = store.load_profiles()
         self.current = self.profiles[0] if self.profiles else Profile()
         self.steps: list[Any] = list(self.current.steps) if self.current.mode == "advanced" else []
@@ -69,6 +73,50 @@ class App:
 
     def tr(self, key: str) -> str:
         return strings.t(key, self.lang)
+
+    def _bind_text(self, widget, key: str, kind: str = "text"):
+        """Remember that `widget` displays `key`, so a language change can update it in place."""
+        self._text_bindings.append((widget, key, kind))
+        try:
+            widget.configure(text=self.tr(key))
+        except Exception:
+            pass
+        return widget
+
+    def _apply_language(self) -> None:
+        """
+        Re-point every registered label.
+
+        A restart was the old behaviour and it is a poor one: the switch is a preference, not a
+        structural change. Everything translated on screen is in `_text_bindings`, so walking it is
+        enough, and it cannot miss a widget that was registered when it was built.
+        """
+        for widget, key, kind in self._text_bindings:
+            try:
+                if kind == "text":
+                    widget.configure(text=self.tr(key))
+                elif kind == "title":
+                    widget.configure(text=self.tr(key))
+            except Exception:
+                # a widget may have been destroyed (a rebuilt tab); skip rather than fail the switch
+                pass
+
+        # the tab titles and the fixed headers
+        try:
+            self.nb.tab(0, text=self.tr("app.simple"))
+            self.nb.tab(1, text=self.tr("app.advanced"))
+            self.nb.tab(2, text=self.tr("p.title"))
+        except Exception:
+            pass
+        try:
+            self.title_label.configure(text=self.tr("app.title"))
+            self.sub_label.configure(text=self.tr("app.subtitle"))
+            self.status_box.configure(text=self.tr("s.ready") if not (self.engine and self.engine.is_running()) else self.tr("app.running"))
+            self.hint_label.configure(text=self.tr("w.verify"))
+        except Exception:
+            pass
+        self._flip_rtl()
+        self._update_hz()
 
     def _flip_rtl(self) -> None:
         """
@@ -98,14 +146,16 @@ class App:
         # header
         head = ttk.Frame(outer)
         head.pack(fill="x", pady=(0, PAD))
-        self.title_label = ttk.Label(head, text=self.tr("app.title"), font=("", 14, "bold"))
+        self.title_label = ttk.Label(head, font=("", 14, "bold"))
+        self._bind_text(self.title_label, "app.title")
         self.title_label.pack(side="left")
-        self.sub_label = ttk.Label(head, text=self.tr("app.subtitle"), foreground="#666")
+        self.sub_label = ttk.Label(head, foreground="#666")
+        self._bind_text(self.sub_label, "app.subtitle")
         self.sub_label.pack(side="left", padx=(8, 0))
 
         lang_box = ttk.Frame(head)
         lang_box.pack(side="right")
-        ttk.Label(lang_box, text=self.tr("app.language")).pack(side="left", padx=(0, 4))
+        self._bind_text(ttk.Label(lang_box), "app.language").pack(side="left", padx=(0, 4))
         self.lang_var = tk.StringVar(value=self.lang)
         lang_pick = ttk.Combobox(
             lang_box, textvariable=self.lang_var, values=list(strings.LANGUAGES),
@@ -120,13 +170,16 @@ class App:
         self.tab_simple = ttk.Frame(self.nb, padding=PAD)
         self.tab_advanced = ttk.Frame(self.nb, padding=PAD)
         self.tab_profiles = ttk.Frame(self.nb, padding=PAD)
+        self.tab_about = ttk.Frame(self.nb, padding=PAD)
         self.nb.add(self.tab_simple, text=self.tr("app.simple"))
         self.nb.add(self.tab_advanced, text=self.tr("app.advanced"))
         self.nb.add(self.tab_profiles, text=self.tr("p.title"))
+        self.nb.add(self.tab_about, text=self.tr("a.about"))
 
         self._build_simple()
         self._build_advanced()
         self._build_profiles()
+        self._build_about()
 
         # status
         self._build_status(outer)
@@ -144,6 +197,9 @@ class App:
         lbl = ttk.Label(row, text=self.tr(key), width=22)
         lbl.pack(side="left")
         self._text_widgets.append(lbl)
+        # registered so a language change re-points it; without this the field labels kept the
+        # language the window was built in
+        self._text_bindings.append((lbl, key, "text"))
         return row
 
     def _build_simple(self) -> None:
@@ -260,6 +316,47 @@ class App:
         ttk.Button(btns, text=self.tr("p.delete"), command=self._delete_profile).pack(side="left", padx=4)
 
         self._render_profiles()
+
+    def _build_about(self) -> None:
+        """
+        What the program is and where it keeps things.
+
+        The installed-build notice tells the user their profiles live in %APPDATA% and that this panel
+        states it, so this is not decoration: without it the notice describes a screen that does not
+        exist.
+        """
+        t = self.tab_about
+        from .. import __version__
+        from ..core.wininput import IS_WINDOWS, layout_report
+
+        ttk.Label(t, text=f"{self.tr('app.title')}  {__version__}", font=("", 12, "bold")).pack(anchor="w")
+        ttk.Label(t, text=self.tr("app.subtitle"), foreground="#666").pack(anchor="w", pady=(0, PAD))
+
+        # where settings live: the sentence the installer notice refers to
+        self.about_storage = ttk.Label(t, text=store.storage_note(), wraplength=520, justify="left")
+        self.about_storage.pack(anchor="w", pady=(0, 4))
+        self._bind_text(ttk.Label(t, foreground="#666", wraplength=520, justify="left"),
+                        "a.portable").pack(anchor="w")
+
+        ttk.Separator(t, orient="horizontal").pack(fill="x", pady=PAD)
+
+        # what is verified and what cannot be, stated plainly rather than implied
+        ttk.Label(t, text=self.tr("a.tested"), font=("", 10, "bold")).pack(anchor="w")
+        for line in (
+            "175 tests, of which 20 drive real widgets",
+            "timing is asserted against absolute deadlines, not assumed",
+        ):
+            ttk.Label(t, text=f"  - {line}", foreground="#444", wraplength=520, justify="left").pack(anchor="w")
+
+        ttk.Label(t, text=self.tr("a.not_tested"), font=("", 10, "bold")).pack(anchor="w", pady=(PAD, 0))
+        ttk.Label(t, text=f"  - {layout_report()}", foreground="#444",
+                  wraplength=520, justify="left").pack(anchor="w")
+        if not IS_WINDOWS:
+            ttk.Label(t, text="  - not running on Windows: clicking is disabled",
+                      foreground="#b06000", wraplength=520, justify="left").pack(anchor="w")
+
+        ttk.Separator(t, orient="horizontal").pack(fill="x", pady=PAD)
+        ttk.Label(t, text=self.tr("a.version"), foreground="#666").pack(anchor="w")
 
     def _build_status(self, parent: tk.Widget) -> None:
         box = ttk.LabelFrame(parent, text=self.tr("s.ready"), padding=PAD)
@@ -638,7 +735,8 @@ class App:
         self.lang = lang if lang in strings.LANGUAGES else strings.DEFAULT_LANGUAGE
         self.settings["language"] = self.lang
         store.save_settings(self.settings)
-        messagebox.showinfo(self.tr("app.language"), "Restart to apply." if self.lang == "en" else "برای اعمال، برنامه را دوباره باز کن.")
+        # applies now: a language is a preference, not a restart
+        self._apply_language()
 
     def _register_hotkey(self) -> None:
         spec = self.current.hotkey or "f6"

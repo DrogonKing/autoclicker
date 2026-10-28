@@ -84,18 +84,34 @@ def selftest() -> int:
         entries = len([w for w in _walk(root) if w.winfo_class() == "TEntry"])
         frames = len([w for w in _walk(root) if w.winfo_class() == "TFrame"])
 
+        tabs = len(app.nb.tabs())
         print(f"widgets  {widgets} total, {frames} frames, {entries} entries, {notebooks} notebook")
-        print(f"tabs     {len(app.nb.tabs())}")
+        print(f"tabs     {tabs}")
         print(f"hotkey   {app.current.hotkey} (registered: {app.hotkey.registered})")
 
         # the interface must have real content, not an empty shell
         problems = []
         if widgets < 40:
             problems.append(f"only {widgets} widgets were created")
-        if len(app.nb.tabs()) != 3:
-            problems.append(f"expected 3 tabs, found {len(app.nb.tabs())}")
+        # Simple, Advanced, Profiles, About
+        if tabs != 4:
+            problems.append(f"expected 4 tabs, found {tabs}")
         if entries < 8:
             problems.append(f"only {entries} entry fields; the simple tab should have most of them")
+
+        # every bound label must resolve to real text, in both languages: a missing key renders as the
+        # key name, which is invisible to a widget count
+        from autoclick.ui import strings as _strings
+
+        for lang in ("en", "fa"):
+            unresolved = [
+                k for _w, k, _kind in app._text_bindings
+                if _strings.t(k, lang) == k
+            ]
+            if unresolved:
+                problems.append(f"{lang}: {len(unresolved)} labels have no translation: {unresolved[:4]}")
+            translated = len(app._text_bindings)
+        print(f"labels   {translated} bound, all resolvable in en and fa")
 
         # the engine must be able to drive a profile with the recording backend
         from autoclick.core.engine import Engine
