@@ -124,6 +124,60 @@ class TestSwallowBehaviour:
         assert decide(is_down=False).stop is False
 
 
+class TestTheDefaultKey:
+    """
+    The default is Escape. Asserted explicitly because it is a user-facing choice that was changed once
+    already, and a silent drift back to another key is exactly the kind of thing that reaches a user.
+    """
+
+    def test_the_profile_default_is_escape(self):
+        from autoclick.core.model import DEFAULT_FORCE_STOP_KEY, Profile
+
+        assert DEFAULT_FORCE_STOP_KEY == "esc"
+        assert Profile().force_stop_key == "esc"
+
+    def test_escape_resolves_to_the_right_virtual_key(self):
+        from autoclick.core.wininput import key_to_vk
+
+        assert key_to_vk("esc") == 0x1B
+        assert key_to_vk("escape") == 0x1B
+
+    def test_escape_is_not_the_key_people_type_constantly(self):
+        """
+        The reasoning behind choosing Escape over Enter, asserted so the intent is recorded.
+
+        Enter is pressed constantly - submitting forms, sending messages - so binding it means the panic
+        key is also an everyday key. Escape carries a "stop" meaning already.
+        """
+        from autoclick.core.model import DEFAULT_FORCE_STOP_KEY
+
+        assert DEFAULT_FORCE_STOP_KEY != "enter"
+        assert DEFAULT_FORCE_STOP_KEY != "return"
+
+    def test_a_profile_with_the_default_still_validates(self):
+        from autoclick.core.model import Profile
+
+        Profile().validate()
+
+    def test_escape_stops_a_run(self):
+        d = decide_key(vk=0x1B, is_down=True, injected=False, target_vk=0x1B,
+                       run_active=True, swallow_while_running=True)
+        assert d.stop is True
+
+    def test_enter_no_longer_stops_a_run_by_default(self):
+        """
+        With the default moved to Escape, an Enter press must pass straight through - including when
+        nothing is running, but also during a run, since it is no longer the configured key.
+        """
+        from autoclick.core.wininput import key_to_vk
+
+        default_vk = key_to_vk("esc")
+        d = decide_key(vk=VK_RETURN, is_down=True, injected=False, target_vk=default_vk,
+                       run_active=True, swallow_while_running=True)
+        assert d.stop is False
+        assert d.swallow is False, "Enter must not be held back by a stop key that is not Enter"
+
+
 class TestStructLayout:
     """
     Asserted on every platform. The offsets are what Windows reads in the callback, so a wrong layout

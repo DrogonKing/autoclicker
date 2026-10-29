@@ -22,7 +22,7 @@ sys.path.insert(0, "src")
 
 from autoclick.core.engine import Engine                                    # noqa: E402
 from autoclick.core.force_stop import ForceStopWatcher, decide_key          # noqa: E402
-from autoclick.core.model import Profile                                    # noqa: E402
+from autoclick.core.model import KeyStep, Profile                           # noqa: E402
 from autoclick.core.wininput import NullBackend                             # noqa: E402
 
 VK_RETURN = 0x0D
@@ -90,10 +90,29 @@ d2 = decide_key(vk=VK_RETURN, is_down=True, injected=True, target_vk=VK_RETURN,
 check("injected Enter is ignored", d2.stop is False and d2.swallow is False)
 
 print()
+print("=== 3b. a profile that types ESCAPE must not stop itself ===")
+d3 = decide_key(vk=0x1B, is_down=True, injected=True, target_vk=0x1B,
+                run_active=True, swallow_while_running=True)
+check("injected Escape is ignored", d3.stop is False and d3.swallow is False)
+
+backend3 = NullBackend()
+engine3 = Engine(backend3)
+p3 = Profile(mode="advanced", interval_ms=1, repeat=15, steps=[KeyStep(keys=["esc"], gap_ms=0)])
+stats3 = engine3.run_blocking(p3)
+check("an Escape profile finishes normally", stats3.stopped_by == "finished",
+      f"stopped_by={stats3.stopped_by!r}")
+check("all its repetitions ran", stats3.repeats_done == 15, f"{stats3.repeats_done}")
+
+print()
+print("=== 3c. but a REAL Escape press does stop it ===")
+d4 = decide_key(vk=0x1B, is_down=True, injected=False, target_vk=0x1B,
+                run_active=True, swallow_while_running=True)
+check("a real Escape press stops", d4.stop is True)
+
+print()
 print("=== 4. a profile that types Enter runs to completion, not to a self-stop ===")
 backend2 = NullBackend()
 engine2 = Engine(backend2)
-from autoclick.core.model import KeyStep  # noqa: E402
 
 p2 = Profile(mode="advanced", interval_ms=1, repeat=20, steps=[KeyStep(keys=["enter"], gap_ms=0)])
 stats2 = engine2.run_blocking(p2)

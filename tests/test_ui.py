@@ -204,7 +204,7 @@ class TestForceStop:
         from autoclick.ui.app import App
 
         app = App(root)
-        assert "ENTER" in app.force_label["text"].upper()
+        assert "ESC" in app.force_label["text"].upper()
 
     def test_it_says_armed_while_a_run_is_active(self, root):
         """The state must be unmistakable at the moment it matters."""
@@ -234,7 +234,7 @@ class TestForceStop:
         app.v_count.set("2")
         app._start(dry=True)
         pump(root, 2.5)
-        assert "ENTER" in app.force_label["text"].upper()
+        assert "ESC" in app.force_label["text"].upper()
         # the hook must not be left installed while idle: a permanently installed keyboard hook is what
         # a keylogger looks like, and there is no reason to look like one when nothing is running
         assert app.force_watcher.installed is False

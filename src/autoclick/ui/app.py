@@ -68,7 +68,7 @@ class App:
         # works even when this window is not responding.
         self.force_watcher = make_watcher(
             self._force_stop_fired,
-            key_name=self.current.force_stop_key or "enter",
+            key_name=self.current.force_stop_key or DEFAULT_FORCE_STOP_KEY,
             swallow_while_running=bool(self.current.force_stop_swallow),
             run_active=lambda: bool(self.engine and self.engine.is_running()),
         )
@@ -226,7 +226,9 @@ class App:
         self.v_at_once = tk.StringVar(value=str(self.current.at_once))
         self.v_double = tk.BooleanVar(value=self.current.double)
         self.v_maxdur = tk.StringVar(value=str(self.current.max_duration_ms))
-        self.v_force_key = tk.StringVar(value=self.current.force_stop_key or "enter")
+        self.v_force_key = tk.StringVar(
+            value=self.current.force_stop_key or DEFAULT_FORCE_STOP_KEY
+        )
         self.v_force_swallow = tk.BooleanVar(value=bool(self.current.force_stop_swallow))
         self.v_x = tk.StringVar(value=str(self.current.x))
         self.v_y = tk.StringVar(value=str(self.current.y))
@@ -528,7 +530,7 @@ class App:
             double=bool(self.v_double.get()),
             steps=list(self.steps),
             max_duration_ms=max(0, maxdur),
-            force_stop_key=(self.v_force_key.get() or "enter").strip(),
+            force_stop_key=(self.v_force_key.get() or DEFAULT_FORCE_STOP_KEY).strip(),
             force_stop_swallow=bool(self.v_force_swallow.get()),
         )
         p.validate()
@@ -569,7 +571,7 @@ class App:
         self.v_at_once.set(str(p.at_once))
         self.v_double.set(p.double)
         self.v_maxdur.set(str(p.max_duration_ms))
-        self.v_force_key.set(p.force_stop_key or "enter")
+        self.v_force_key.set(p.force_stop_key or DEFAULT_FORCE_STOP_KEY)
         self.v_force_swallow.set(bool(p.force_stop_swallow))
         self.v_name.set(p.name)
         self.steps = list(p.steps) if p.mode == "advanced" else []
@@ -678,12 +680,16 @@ class App:
         stop. If the hook cannot be installed, that is stated plainly: silently having no emergency stop
         during a clicking run is worse than not offering one.
         """
-        self.force_watcher._target_vk = _resolve_force_key(profile.force_stop_key or "enter")
+        self.force_watcher._target_vk = _resolve_force_key(
+            profile.force_stop_key or DEFAULT_FORCE_STOP_KEY
+        )
         self.force_watcher._swallow = bool(profile.force_stop_swallow)
         ok = self.force_watcher.arm()
         if ok:
             self.force_label.configure(
-                text=self.tr("f.force_stop_armed").format(key=(profile.force_stop_key or "enter").upper()),
+                text=self.tr("f.force_stop_armed").format(
+                    key=(profile.force_stop_key or DEFAULT_FORCE_STOP_KEY).upper()
+                ),
                 foreground="#0a7d28",
             )
         else:
@@ -697,7 +703,8 @@ class App:
         self.force_watcher.disarm()
         self.force_label.configure(
             text=self.tr("f.force_stop_ready").format(
-                key=(self.current.force_stop_key or "enter").upper()),
+                key=(self.current.force_stop_key or DEFAULT_FORCE_STOP_KEY).upper()
+            ),
             foreground="#666",
         )
 
@@ -862,7 +869,7 @@ def _resolve_force_key(name: str) -> int:
     try:
         return key_to_vk(name)
     except Exception:  # noqa: BLE001
-        return key_to_vk("enter")
+        return key_to_vk(DEFAULT_FORCE_STOP_KEY)
 
 
 def main() -> int:

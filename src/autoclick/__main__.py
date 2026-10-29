@@ -156,9 +156,9 @@ def _resolve_stop_vk(name: str) -> int:
     from autoclick.core.wininput import key_to_vk
 
     try:
-        return key_to_vk(name or "enter")
+        return key_to_vk(name or DEFAULT_FORCE_STOP_KEY)
     except Exception:  # noqa: BLE001
-        return key_to_vk("enter")
+        return key_to_vk(DEFAULT_FORCE_STOP_KEY)
 
 
 def _walk(widget):

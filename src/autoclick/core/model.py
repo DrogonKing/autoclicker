@@ -24,6 +24,10 @@ MIN_REPEAT = 1
 MAX_REPEAT = 10_000_000
 MAX_AT_ONCE = 100
 MAX_STEPS = 500
+
+# The force stop key. One definition, because this string is used as a fallback in several places and
+# a divergent copy would leave a path watching the wrong key while the label said otherwise.
+DEFAULT_FORCE_STOP_KEY = "esc"
 MAX_GAP_MS = 60_000
 
 
@@ -132,9 +136,13 @@ class Profile:
     hotkey: str = "f6"
 
     # The force stop key: pressed once during a run, it stops immediately from inside the keyboard hook
-    # rather than through the interface, so it works even if the window is not responding. Bare Enter by
-    # default because that is what was asked for: no modifier to find in a hurry.
-    force_stop_key: str = "enter"
+    # rather than through the interface, so it works even if the window is not responding. No modifier to
+    # find in a hurry.
+    #
+    # Escape, not Enter. Both are single keys with no modifier, but Escape already means "stop" in games
+    # and full-screen applications, and it is far less likely to be the key you are using for something
+    # else at the moment you need to stop. Enter is used constantly; Escape is used when you want out.
+    force_stop_key: str = DEFAULT_FORCE_STOP_KEY
     # While a run is active, hold the key back so the panic button cannot also submit a form or send a
     # message in whatever has focus. The key works normally again as soon as the run ends.
     force_stop_swallow: bool = True
