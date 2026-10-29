@@ -131,6 +131,14 @@ class Profile:
     max_duration_ms: int = 0
     hotkey: str = "f6"
 
+    # The force stop key: pressed once during a run, it stops immediately from inside the keyboard hook
+    # rather than through the interface, so it works even if the window is not responding. Bare Enter by
+    # default because that is what was asked for: no modifier to find in a hurry.
+    force_stop_key: str = "enter"
+    # While a run is active, hold the key back so the panic button cannot also submit a form or send a
+    # message in whatever has focus. The key works normally again as soon as the run ends.
+    force_stop_swallow: bool = True
+
     def validate(self) -> None:
         if self.mode not in ("simple", "advanced"):
             raise ProfileError(f"unknown mode: {self.mode!r}")
@@ -148,6 +156,15 @@ class Profile:
             except ParseError as e:
                 # the caller of validate() wants a ProfileError; the message is the parser's
                 raise ProfileError(f"start time: {e}") from None
+        if self.force_stop_key:
+            try:
+                # Resolve the name NOW rather than at the moment of panic. An unusable name must be
+                # reported when the setting is made, not discovered while trying to stop a runaway run.
+                from .wininput import key_to_vk
+
+                key_to_vk(self.force_stop_key)
+            except Exception as e:  # noqa: BLE001
+                raise ProfileError(f"force stop key: {e}") from None
         if self.mode == "simple":
             ClickStep(
                 button=self.button, position=self.position, x=self.x, y=self.y,

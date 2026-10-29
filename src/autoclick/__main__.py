@@ -113,6 +113,20 @@ def selftest() -> int:
             translated = len(app._text_bindings)
         print(f"labels   {translated} bound, all resolvable in en and fa")
 
+        # The force stop must be wired and its key must be resolvable, because a run without a way to
+        # stop it is the one failure this program must not have.
+        from autoclick.core.force_stop import decide_key as _decide
+
+        stop_decision = _decide(
+            vk=_resolve_stop_vk(app.current.force_stop_key), is_down=True, injected=False,
+            target_vk=_resolve_stop_vk(app.current.force_stop_key),
+            run_active=True, swallow_while_running=True,
+        )
+        print(f"forcestop key={app.current.force_stop_key} stops-a-run={stop_decision.stop} "
+              f"hook-available={app.force_watcher.available}")
+        if not stop_decision.stop:
+            problems.append("the force stop key does not stop a run")
+
         # the engine must be able to drive a profile with the recording backend
         from autoclick.core.engine import Engine
         from autoclick.core.model import Profile
@@ -135,6 +149,16 @@ def selftest() -> int:
         return 0
     finally:
         root.destroy()
+
+
+def _resolve_stop_vk(name: str) -> int:
+    """Virtual-key code for the force stop key, falling back to Enter."""
+    from autoclick.core.wininput import key_to_vk
+
+    try:
+        return key_to_vk(name or "enter")
+    except Exception:  # noqa: BLE001
+        return key_to_vk("enter")
 
 
 def _walk(widget):

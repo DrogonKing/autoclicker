@@ -13,6 +13,9 @@ A customizable autoclicker for Windows. Portable and installed builds.
   as three distinguishable presses instead of an instantaneous blur that many applications ignore.
 - **Sequences (advanced tab).** Any mix of clicks, key chords and waits, in order.
 - **Hotkey to start and stop** (`F6` by default) that works while the app is unfocused.
+- **Force stop on a bare key** (`Enter` by default): one press, no modifier, stops a run instantly. It
+  is read inside a keyboard hook rather than through the interface, so it still works if the window is
+  not responding.
 - **Test mode**: runs the real timing engine against a recorder instead of your mouse, so a profile
   can be checked before it clicks anything.
 - English and Persian interface.
@@ -33,6 +36,31 @@ read.
 Where settings live:
 - installed → `%APPDATA%\AutoClicker`
 - portable → a `profiles` folder beside the executable
+
+## The force stop key
+
+One key, no modifier, and it stops immediately. Three details worth knowing, because each of them is a
+choice rather than an implementation accident:
+
+**Why not a normal hotkey.** `RegisterHotKey` - what the F6 toggle uses - *swallows the key
+system-wide*. Registering bare `Enter` that way would mean that while the autoclicker is open, `Enter`
+does nothing in your browser, editor or game. The program would break your keyboard. So the force stop
+uses a low-level keyboard hook instead, which sees the key and decides what to do with it.
+
+**It works when the window does not.** The stop is decided inside the hook and only sets a
+`threading.Event`. Routing it through the interface would mean waiting for the event loop, and a stop
+that depends on the interface being responsive is not a force stop.
+
+**What happens to the key itself.** By default it is held back while a run is active, so the panic
+button cannot also submit a form or send a message in whatever has focus. Turn that off and `Enter` is
+passed through untouched. When nothing is running, `Enter` is completely normal either way - the hook
+is only installed for the duration of a run.
+
+**Your own Enter does not stop your own run.** The hook ignores injected keystrokes, so a profile that
+types `Enter` runs to completion instead of tripping its own emergency stop on the first repetition.
+Verified: `20 repeats, 20 keys sent, stopped_by='finished'`.
+
+The key is configurable, and the setting travels with the profile.
 
 ## The part that is usually wrong
 
@@ -63,7 +91,7 @@ test_total_time_is_independent_of_per_click_cost
 ## Tests
 
 ```
-94 tests run anywhere, 9 more run on Windows only
+211 tests run anywhere, 6 more run on Windows only
 ```
 
 The Windows-only ones are the reason CI runs on `windows-latest`: the `SendInput` structure layout

@@ -24,6 +24,7 @@ from typing import Any
 
 from ..core.engine import Engine, RunStats
 from ..core.errors import ParseError, ProfileError
+from ..core.force_stop import make_watcher
 from ..core.model import MAX_AT_ONCE, ClickStep, KeyStep, Profile, WaitStep
 from ..core.schedule import parse_duration, parse_start_time
 from ..core.wininput import IS_WINDOWS, make_backend
@@ -61,11 +62,24 @@ class App:
 
         self.hotkey = Hotkey(self._hotkey_fired)
 
+        # The force stop key. Not a RegisterHotKey: that would swallow the key system-wide, so bare
+        # Enter would stop working in every other program while the autoclicker is open. A low-level
+        # hook sees the key and passes it through, and the stop decision is made inside the hook, so it
+        # works even when this window is not responding.
+        self.force_watcher = make_watcher(
+            self._force_stop_fired,
+            key_name=self.current.force_stop_key or "enter",
+            swallow_while_running=bool(self.current.force_stop_swallow),
+            run_active=lambda: bool(self.engine and self.engine.is_running()),
+        )
+
         root.title(strings.t(self.lang, "app.title"))
         root.minsize(560, 620)
 
         self._build()
         self._register_hotkey()
+        self.force_watcher.start()
+        self._disarm_force_stop()  # shows the key and leaves the hook uninstalled while idle
         self._refresh_status()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -212,6 +226,8 @@ class App:
         self.v_at_once = tk.StringVar(value=str(self.current.at_once))
         self.v_double = tk.BooleanVar(value=self.current.double)
         self.v_maxdur = tk.StringVar(value=str(self.current.max_duration_ms))
+        self.v_force_key = tk.StringVar(value=self.current.force_stop_key or "enter")
+        self.v_force_swallow = tk.BooleanVar(value=bool(self.current.force_stop_swallow))
         self.v_x = tk.StringVar(value=str(self.current.x))
         self.v_y = tk.StringVar(value=str(self.current.y))
 
@@ -262,6 +278,13 @@ class App:
         ttk.Entry(row, textvariable=self.v_maxdur, width=10).pack(side="left")
         h4 = ttk.Label(row, text=self.tr("f.max_duration_hint"), foreground="#666")
         h4.pack(side="left", padx=(8, 0))
+
+        # The force stop. Placed with the other run settings, and its state is shown next to the buttons
+        # so it is visible exactly when it matters.
+        row = self._labelled(t, "f.force_stop")
+        ttk.Entry(row, textvariable=self.v_force_key, width=12).pack(side="left")
+        ttk.Checkbutton(row, text=self.tr("f.force_stop_swallow"),
+                        variable=self.v_force_swallow).pack(side="left", padx=(8, 0))
 
     def _build_advanced(self) -> None:
         t = self.tab_advanced
@@ -399,6 +422,12 @@ class App:
         self.hotkey_label.pack(fill="x", pady=(6, 0))
         self._text_widgets.append(self.hotkey_label)
 
+        # Always visible, and it turns green while a run is active: the user must be able to see what to
+        # press before they need it.
+        self.force_label = ttk.Label(parent, text="", foreground="#666")
+        self.force_label.pack(fill="x")
+        self._text_widgets.append(self.force_label)
+
         self.hint_label = ttk.Label(parent, text=self.tr("w.verify"), foreground="#666")
         self.hint_label.pack(fill="x")
         self._text_widgets.append(self.hint_label)
@@ -499,6 +528,8 @@ class App:
             double=bool(self.v_double.get()),
             steps=list(self.steps),
             max_duration_ms=max(0, maxdur),
+            force_stop_key=(self.v_force_key.get() or "enter").strip(),
+            force_stop_swallow=bool(self.v_force_swallow.get()),
         )
         p.validate()
         return p
@@ -538,6 +569,8 @@ class App:
         self.v_at_once.set(str(p.at_once))
         self.v_double.set(p.double)
         self.v_maxdur.set(str(p.max_duration_ms))
+        self.v_force_key.set(p.force_stop_key or "enter")
+        self.v_force_swallow.set(bool(p.force_stop_swallow))
         self.v_name.set(p.name)
         self.steps = list(p.steps) if p.mode == "advanced" else []
         self._render_steps()
@@ -615,6 +648,9 @@ class App:
         if self._poll_id:
             self.root.after_cancel(self._poll_id)
             self._poll_id = None
+        # Arm the force stop BEFORE the first click. If it were armed after, a run whose first repetition
+        # is immediate would have a moment with no way to stop it.
+        self._arm_force_stop(profile)
         self._drain_queue()
         self.engine.start(profile)
 
@@ -633,6 +669,49 @@ class App:
         if self.engine:
             self.engine.stop("stopped by user")
         self._after_run()
+
+    def _arm_force_stop(self, profile: Profile) -> None:
+        """
+        Install the force stop hook for this run, and say so on screen.
+
+        The key is shown next to the buttons because a force stop the user cannot remember is not a force
+        stop. If the hook cannot be installed, that is stated plainly: silently having no emergency stop
+        during a clicking run is worse than not offering one.
+        """
+        self.force_watcher._target_vk = _resolve_force_key(profile.force_stop_key or "enter")
+        self.force_watcher._swallow = bool(profile.force_stop_swallow)
+        ok = self.force_watcher.arm()
+        if ok:
+            self.force_label.configure(
+                text=self.tr("f.force_stop_armed").format(key=(profile.force_stop_key or "enter").upper()),
+                foreground="#0a7d28",
+            )
+        else:
+            self.force_label.configure(
+                text=f"{self.tr('f.force_stop')}: {self.force_watcher.error}",
+                foreground="#b06000",
+            )
+
+    def _disarm_force_stop(self) -> None:
+        """Remove the hook as soon as the run ends. No keyboard hook while idle."""
+        self.force_watcher.disarm()
+        self.force_label.configure(
+            text=self.tr("f.force_stop_ready").format(
+                key=(self.current.force_stop_key or "enter").upper()),
+            foreground="#666",
+        )
+
+    def _force_stop_fired(self) -> None:
+        """
+        Runs on the keyboard-hook thread. Must not touch Tk.
+
+        `Engine.stop()` only sets a threading.Event, which is safe from any thread and is the whole point:
+        the stop takes effect immediately, inside the hook, without waiting for the interface to be free.
+        Anything routed through the UI could be delayed by a busy event loop, and a force stop that
+        depends on the interface being responsive is not a force stop.
+        """
+        if self.engine is not None:
+            self.engine.stop("force stop key")
 
     def _hotkey_fired(self) -> None:
         """
@@ -689,6 +768,7 @@ class App:
         self._poll_id = self.root.after(30, self._drain_queue)
 
     def _after_run(self) -> None:
+        self._disarm_force_stop()
         self.start_btn.configure(state="normal")
         self.test_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
@@ -753,6 +833,7 @@ class App:
                 return
             self.engine.stop("window closed")
         self.hotkey.unregister()
+        self.force_watcher.close()
         self.root.destroy()
 
     def _update_hz(self) -> None:
@@ -772,6 +853,16 @@ class App:
             return int((text or "").strip())
         except ValueError:
             return default
+
+
+def _resolve_force_key(name: str) -> int:
+    """Resolve a key name to a virtual-key code, falling back to Enter if it is unusable."""
+    from ..core.wininput import key_to_vk
+
+    try:
+        return key_to_vk(name)
+    except Exception:  # noqa: BLE001
+        return key_to_vk("enter")
 
 
 def main() -> int:

@@ -193,6 +193,90 @@ class TestGather:
         assert p.interval_ms == 0
 
 
+class TestForceStop:
+    def test_the_key_is_visible_before_it_is_needed(self, root):
+        """
+        The user has to be able to see what to press before they need to press it.
+
+        A force stop the user cannot remember is not a force stop, so the key is shown next to the
+        buttons at all times.
+        """
+        from autoclick.ui.app import App
+
+        app = App(root)
+        assert "ENTER" in app.force_label["text"].upper()
+
+    def test_it_says_armed_while_a_run_is_active(self, root):
+        """The state must be unmistakable at the moment it matters."""
+        from autoclick.ui.app import App
+
+        app = App(root)
+        app.v_interval.set("50")
+        app.v_count.set("0")
+        profile = app._gather()
+
+        app._arm_force_stop(profile)
+        try:
+            text = app.force_label["text"].upper()
+            # on Windows this reads ARMED; off Windows the hook cannot install and the label says why,
+            # which is also correct behaviour and must not be silent
+            assert "ARMED" in text or app.force_watcher.error, (
+                f"the label said {app.force_label['text']!r} with no error to explain it"
+            )
+        finally:
+            app._disarm_force_stop()
+
+    def test_it_returns_to_the_ready_state_after_a_run(self, root):
+        from autoclick.ui.app import App
+
+        app = App(root)
+        app.v_interval.set("1")
+        app.v_count.set("2")
+        app._start(dry=True)
+        pump(root, 2.5)
+        assert "ENTER" in app.force_label["text"].upper()
+        # the hook must not be left installed while idle: a permanently installed keyboard hook is what
+        # a keylogger looks like, and there is no reason to look like one when nothing is running
+        assert app.force_watcher.installed is False
+
+    def test_the_settings_travel_in_the_profile(self, root):
+        from autoclick.ui.app import App
+
+        app = App(root)
+        app.v_force_key.set("f8")
+        app.v_force_swallow.set(False)
+        p = app._gather()
+        p.validate()
+        assert p.force_stop_key == "f8"
+        assert p.force_stop_swallow is False
+
+    def test_loading_a_profile_restores_the_force_stop_settings(self, root):
+        from autoclick.core.model import Profile
+        from autoclick.ui.app import App
+
+        app = App(root)
+        app.profiles = [Profile(name="x", force_stop_key="f9", force_stop_swallow=False)]
+        app.profile_box.delete(0, tk.END)
+        app.profile_box.insert(tk.END, "x")
+        app.profile_box.selection_set(0)
+        app._load_selected()
+        assert app.v_force_key.get() == "f9"
+        assert app.v_force_swallow.get() is False
+
+    def test_an_unusable_key_name_is_reported(self, root, monkeypatch):
+        """
+        Reported when the field is read, not when the user is trying to stop a runaway run.
+        """
+        from autoclick.core.errors import ProfileError
+        from autoclick.ui.app import App
+
+        app = App(root)
+        app.v_force_key.set("not_a_key_at_all")
+        with pytest.raises(ProfileError) as e:
+            app._gather()
+        assert "force stop" in str(e.value).lower()
+
+
 class TestLanguage:
     def test_switching_language_updates_the_labels_in_place(self, root):
         """

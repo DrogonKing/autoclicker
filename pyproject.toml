@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autoclick"
-version = "1.0.8"
+version = "1.0.9"
 description = "A customizable autoclicker for Windows: scheduled start, exact repeat counts, simultaneous clicks and key chords with millisecond gaps"
 requires-python = ">=3.10"
 
